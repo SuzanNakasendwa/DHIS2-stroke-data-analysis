@@ -18,10 +18,13 @@ The R scripts include procedures for:
 R/DHIS2_stroke_analysis.R
 
 ### Software
-The analysis was conducted using R.
+The analysis was conducted using R version 4.5.
 
 ### Reproducibility
 The scripts are provided to support transparency and reproducibility of the analytical workflow. Because the underlying DHIS2 data are not publicly available, the complete analysis cannot be independently reproduced without authorized access to the data.
+
+### Data structure
+The used for this analysis were monthly counts of population, stroke related admissions, stroke cases, and stroke deaths
 
 ### Code availability
 The analysis scripts are publicly available in this repository.
