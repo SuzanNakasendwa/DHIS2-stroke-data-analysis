@@ -1,0 +1,1035 @@
+---
+title: "DHIS2 Research Project"
+author: ""
+date: "24th Mar, 2025"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: false
+  pdf_document:
+    toc: true
+  word_document: 
+    toc: true
+    fig_width: 7
+    fig_height: 5
+editor_options:
+  chunk_output_type: console
+---
+
+<style>
+h1.title {text-align: center;margin-bottom: 30px;}
+h4.author {text-align: center;margin-top: 10px;margin-bottom: 20px;}
+h4.date {text-align: center;margin-top: 10px;margin-bottom: 40px;}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      comment = NA,
+                      message = FALSE,
+                      warning = FALSE)
+```
+
+
+<br> 
+
+
+############################################################
+#### Population data Interpolation at exponential growth ###
+############################################################
+
+
+```{r}
+# Annual population data
+annual_pop = data.frame(year = 2015:2025,
+                        population = c(37531446, 38799152,
+                                       40177388, 41565831,
+                                       42999637, 44457152,
+                                       45910930, 47312719,
+                                       48656601, 50015092,
+                                       51384894))
+
+# Interpolation at exponential growth
+monthly_exponential = do.call(
+  rbind,
+  lapply(seq_len(nrow(annual_pop) - 1), function(i) {
+    start_pop  = annual_pop$population[i]
+    end_pop    = annual_pop$population[i+1]
+    curr_year = annual_pop$year[i+1]
+    
+r_monthly = (end_pop / start_pop)^(1/12) - 1
+    
+data.frame(year  = rep(curr_year,12),
+           month = 1:12,
+           population = start_pop * (1 + r_monthly)^(1:12))}))
+
+head(monthly_exponential, 12)
+
+```
+
+
+```{r}
+monthly_exponential$year_month = as.Date(
+  paste(monthly_exponential$year,
+        monthly_exponential$month,
+        "01", sep = "-"))
+
+monthly_exponential$period = format(
+  monthly_exponential$year_month, "%b-%y")
+
+library(ggplot2)
+pop = ggplot(monthly_exponential,
+       aes(x = year_month, y = population/10^6)) +
+  geom_line(linewidth = 1) +
+  geom_point( data = subset(monthly_exponential, month == 12),
+              size = 2) +
+  labs(x = "Period", y = "Population in millions") +
+  theme_bw()
+pop
+
+```
+
+
+<br> 
+
+############################################################
+##################### Trends analysis ######################
+############################################################
+
+
+```{r}
+
+library(tidyverse)
+library(lubridate)
+library(MASS)        # Negative binomial
+library(forecast)    # ARIMA, STL
+library(tsoutliers)  # Outlier detection
+library(broom)
+library(AER)         # Overdispersion test
+library(ggplot2)
+library(ggplotify)
+
+set.seed(100)
+
+stroke_data1 = read_csv("G:/Dataset1.csv")
+
+stroke_data2 = read_csv("G:/Dataset2.csv")
+
+stroke_data = rbind(stroke_data1, stroke_data2)
+View(stroke_data)
+
+stroke_data = merge(
+  stroke_data,
+  monthly_exponential[, c("period", "population")],
+  by = "period", all.x = TRUE)
+
+stroke_data$date = as.Date(
+  paste0("01-", stroke_data$period),
+  format = "%d-%b-%y")
+
+stroke_data = stroke_data[order(stroke_data$date), ]
+
+stroke_data = stroke_data %>%
+  mutate(time = 1:n(),
+         month = factor(month(my(period)), levels=1:12),
+         year = year(date))
+
+```
+
+
+### Dealing with outliers
+
+```{r}
+# Convert to time series
+y = stroke_data$`stroke accidents`
+y_ts = ts(y, start=c(2016,1), frequency=12)
+
+# Detect and replace outliers using ARIMA
+outliers = tso(y_ts, types="AO", tsmethod = "auto.arima")
+y_ts_clean = outliers$yadj
+stroke_data$stroke_accidents_clean = round(as.numeric(y_ts_clean),0)
+
+
+
+y = stroke_data$`stroke cases`
+y_ts = ts(y, start=c(2020,1), frequency=12)
+
+outliers = tso(y_ts, types="AO", tsmethod = "auto.arima")
+y_ts_clean = outliers$yadj
+stroke_data$stroke_cases_clean = round(as.numeric(y_ts_clean),0)
+
+
+
+y = stroke_data$`stroke deaths`
+y_ts = ts(y, start=c(2020,1), frequency=12)
+
+outliers = tso(y_ts, types="AO", tsmethod = "auto.arima")
+y_ts_clean = outliers$yadj
+stroke_data$stroke_deaths_clean = round(as.numeric(y_ts_clean),0)
+
+```
+
+
+### Summarizing data
+
+```{r}
+library(dplyr)
+library(lubridate)
+class(stroke_data$date)
+
+annual = stroke_data %>% mutate(year = year(date)) %>%
+  group_by(year) %>%
+  summarise(suspected = sum(stroke_accidents_clean),
+            confirmed = sum(stroke_cases_clean),
+            deaths = sum(stroke_deaths_clean),
+            population = mean(population)) %>%
+  mutate(incidence_rate = round(confirmed/population*100000,3),
+         mortality_rate = round(deaths/population*100000,3),
+         CFR = round(deaths/confirmed,3))
+annual
+
+write.csv(annual, "G:/My Drive/PhD/Manuscripts/DHIS2/Datasets/stroke_annual_summary.csv")
+
+
+```
+
+
+### Monthly stroke rates trends
+
+```{r}
+
+library(ggplot2)
+library(dplyr)
+library(scales)
+
+stroke_monthly = stroke_data %>% mutate(year = year(date),
+         incidence_rate = stroke_cases_clean/population*100000,
+         mortality_rate = stroke_deaths_clean/population*100000,
+         CFR = stroke_deaths_clean/stroke_cases_clean)
+
+
+stroke_monthly = stroke_monthly %>%
+  mutate(date = as.Date(paste(year, month, "01", sep = "-")))
+
+scale_factor = 3.5
+stroke_monthly = stroke_monthly %>%
+  mutate(CFR_scaled = CFR * scale_factor)
+library(tidyr)
+plot_data = stroke_monthly %>%
+  dplyr::select(date, incidence_rate, mortality_rate, CFR_scaled) %>%
+  pivot_longer(cols = c(incidence_rate, mortality_rate, CFR_scaled),
+               names_to = "metric",
+               values_to = "value")
+
+
+DesB = ggplot(plot_data, aes(x = date, y = value, color = metric)) +
+  geom_point(aes(shape = metric)) +
+  geom_line(size = 0.8) +
+  scale_y_continuous(name = "Rate per 100,000 population",
+                     sec.axis = sec_axis(~ ./scale_factor,
+                                      name = "Case fatality rate")) +
+  scale_x_date(date_labels = "%b %Y") +
+  theme_minimal() +
+  theme(legend.position = c(0.15, 0.85),
+        legend.key.size = unit(0.4, "cm"),
+        legend.margin = margin(t = -5),
+        legend.box.margin = margin(t = -10)) +
+  scale_color_manual(values = c("CFR_scaled" = "coral",
+                                "incidence_rate" = "skyblue",
+                                "mortality_rate" = "red2"),
+                     labels = c("Case fatality rate",
+                                "Incidence rate",
+                                "Mortality rate"),
+                     name = "") +
+  labs(title = "B", x = "Period") + 
+  scale_shape_manual(values = c("CFR_scaled" = 25,
+                                "incidence_rate" = 15,
+                                "mortality_rate" = 13),
+                     labels = c("Case fatality rate",
+                                "Incidence rate",
+                                "Mortality rate"),
+                     name = "")
+
+```
+
+
+### Plot Suspected vs Confirmed Cases (Monthly)
+
+```{r}
+library(tidyr)
+
+stroke_long = stroke_monthly %>%
+  dplyr::select(date, stroke_accidents_clean,
+                stroke_cases_clean) %>%
+  pivot_longer(cols = c(stroke_accidents_clean,
+                        stroke_cases_clean),
+               names_to = "type",
+               values_to = "cases")
+
+DesA = ggplot(stroke_long, aes(x = date, y = cases, color = type)) +
+  geom_point(aes(shape = type)) +
+  geom_line(linewidth = 0.8) +
+  labs(title = "A", x = "Period", y = "Number of Cases",
+       color = "Case Type") +
+  scale_color_manual(name = "",
+    values = c("stroke_accidents_clean" = "steelblue",
+               "stroke_cases_clean" = "coral2"),
+    labels = c("Suspected cases", "Confirmed cases")) +
+  theme_minimal() + 
+  theme(legend.position = c(0.15, 0.93),
+        legend.key.size = unit(0.4, "cm"),
+        legend.margin = margin(t = -5),
+        legend.box.margin = margin(t = -10)) +
+  ylim(0,2700) + 
+  scale_shape_manual(values = c("stroke_accidents_clean" = 25,
+                                "stroke_cases_clean" = 13),
+                     labels = c("Suspected cases",
+                                "Confirmed cases"),
+                     name = "")
+
+```
+
+### Descriptive plots merged
+
+```{r}
+library(ggpubr)
+ggarrange(DesA, DesB, ncol=1, nrow=2)
+```
+
+
+### Stroke cases
+
+```{r}
+
+# Poisson model
+pois_model = glm(stroke_cases_clean ~ time +
+                   offset(log(population)),
+                  family=poisson(link="log"), 
+                 data=stroke_data)
+
+dispersiontest(pois_model) # dispersion test
+
+# Negative Binomial model
+nb_model = glm.nb(stroke_cases_clean ~ time +
+                    offset(log(population)),
+                  data=stroke_data)
+
+
+data.frame(Model = c("Poisson model",
+                     "Negative Binomial model"),
+           AIC = c(AIC(pois_model),AIC(nb_model)))
+
+
+# Bayesian Negative Binomial model
+library(brms)
+bayes_nb = brm(stroke_cases_clean ~ time +
+                 offset(log(population)),
+               family = negbinomial(),
+               data = stroke_data,
+               prior = c(prior(normal(0,10),
+                               class = "Intercept"),
+                         prior(normal(0,1), class = "b")),
+               chains = 4,
+               iter = 1000)
+summary(bayes_nb)
+pp_check(bayes_nb)
+
+# Bayesian Structural time series
+library(bsts)
+stroke_data$log_acc = log(stroke_data$stroke_cases_clean + 1)
+ss <- list()
+ss <- AddLocalLinearTrend(ss, stroke_data$log_acc)
+ss <- AddSeasonal(ss, stroke_data$log_acc, nseasons = 12)
+
+model_bsts <- bsts(log_acc ~ time, state.specification = ss,
+                   data = stroke_data, niter = 1000)
+plot(model_bsts)
+summary(model_bsts)
+
+# Generalized Additive model (NB)
+library(mgcv)
+stroke_data$time <- as.numeric(stroke_data$time)
+stroke_data$month <- as.numeric(stroke_data$month)
+gam_nb = gam(stroke_cases_clean ~ s(time, k = 20) +
+                s(month, bs = "cc", k = 12) +
+                offset(log(population)),
+              family = nb(), data = stroke_data, method = "REML")
+summary(gam_nb)
+plot(gam_nb, pages = 1)
+gam.check(gam_nb)
+
+# Generalized Additive model LSS (NB)
+library(gamlss)
+gam_lss = gamlss(stroke_cases_clean ~ pb(time) + pb(month) +
+                   offset(log(population)), 
+                 sigma.formula = ~ pb(time),
+                 family = NBII(), data = stroke_data)
+plot(gam_lss)
+
+# Compare predictive performance
+train <- stroke_data[1:96, ]
+test  <- stroke_data[97:120, ]
+# 
+# # On training set
+# pred_nb <- predict(nb_model, newdata = train, type = "response")
+# pred_bayes <- posterior_predict(bayes_nb, newdata = train)
+# pred_bayes_mean <- colMeans(pred_bayes)
+# pred_bsts <- predict(model_bsts, newdata = train, type = "response")
+# pred_bsts_mean <- pred_bsts$mean
+# pred_gam <- predict(gam_nb, newdata = train, type = "response")
+# pred_gamlss <- predict(gam_lss, newdata = train, type = "response")
+# 
+# rmse_nb <- sqrt(mean((train$stroke_accidents_clean - pred_nb)^2))
+# rmse_bayes <- sqrt(mean((train$stroke_accidents_clean - pred_bayes_mean)^2))
+# rmse_bsts <- sqrt(mean((train$stroke_accidents_clean - pred_bsts_mean)^2))
+# rmse_gam <- sqrt(mean((train$stroke_accidents_clean - pred_gam)^2))
+# rmse_gamlss <- sqrt(mean((train$stroke_accidents_clean - pred_gamlss)^2))
+# 
+# mae_nb <- mean(abs(train$stroke_accidents_clean - pred_nb))
+# mae_bayes <- mean(abs(train$stroke_accidents_clean - pred_bayes_mean))
+# mae_bsts <- mean(abs(train$stroke_accidents_clean - pred_bsts_mean))
+# mae_gam <- mean(abs(train$stroke_accidents_clean - pred_gam))
+# mae_gamlss <- mean(abs(train$stroke_accidents_clean - pred_gamlss))
+
+
+
+# On test set
+pred_nb <- predict(nb_model, newdata = test, type = "response")
+pred_bayes <- posterior_predict(bayes_nb, newdata = test)
+pred_bayes_mean <- colMeans(pred_bayes)
+pred_bsts <- predict(model_bsts, newdata = test, type = "response")
+pred_bsts_mean <- pred_bsts$mean
+pred_gam <- predict(gam_nb, newdata = test, type = "response")
+pred_gamlss <- predict(gam_lss, newdata = test, type = "response")
+
+rmse_nb <- sqrt(mean((test$stroke_accidents_clean - pred_nb)^2))
+rmse_bayes <- sqrt(mean((test$stroke_accidents_clean - pred_bayes_mean)^2))
+rmse_bsts <- sqrt(mean((test$stroke_accidents_clean - pred_bsts_mean)^2))
+rmse_gam <- sqrt(mean((test$stroke_accidents_clean - pred_gam)^2))
+rmse_gamlss <- sqrt(mean((test$stroke_accidents_clean - pred_gamlss)^2))
+
+
+mae_nb <- mean(abs(test$stroke_accidents_clean - pred_nb))
+mae_bayes <- mean(abs(test$stroke_accidents_clean - pred_bayes_mean))
+mae_bsts <- mean(abs(test$stroke_accidents_clean - pred_bsts_mean))
+mae_gam <- mean(abs(test$stroke_accidents_clean - pred_gam))
+mae_gamlss <- mean(abs(test$stroke_accidents_clean - pred_gamlss))
+
+
+metrics = data.frame(Model = c("NB", "BNB", "BSTS",
+                               "GAM", "GAMLSS"),
+                     RMSE = c(rmse_nb, rmse_bayes,
+                              rmse_bsts, rmse_gam, rmse_gamlss),
+                     MAE = c(mae_nb, mae_bayes, mae_bsts,
+                             mae_gam, mae_gamlss))
+
+metrics
+
+# Extract estimates
+summary(bayes_nb)
+post <- posterior_summary(bayes_nb)
+
+irr <- exp(post[, "Estimate"])
+lower <- exp(post[, "Q2.5"])
+upper <- exp(post[, "Q97.5"])
+
+results <- data.frame(IRR = irr, CI_lower = lower, CI_upper = upper)
+results[grep("^b_", rownames(results)), ]
+
+
+# Residual inspection
+res = residuals(bayes_nb)[, "Estimate"]
+Box.test(res, lag = 12, type = "Ljung-Box")
+
+### Decomposition: Population Growth vs Epidemiological Change
+
+stroke_inc = stroke_data %>%
+  mutate(fitted_cases = predict(bayes_nb, newdata =.,
+                                type = "response"),
+         fitted_rate = (fitted_cases[, "Estimate"] / population) * 100000)
+
+annual_cases = stroke_inc %>% group_by(year) %>%
+  summarise(population = mean(population),
+            cases = sum(stroke_cases_clean),
+          cases_model = sum(fitted_cases[, "Estimate"]),
+          rate_model = sum(fitted_cases[, "Estimate"]) / mean(population) * 100000) %>%
+  arrange(year)
+
+annual_cases = annual_cases %>%
+  mutate(pop_effect = (population - lag(population))*
+      ((rate_model + lag(rate_model))/2) / 100000,
+      
+      rate_effect = (rate_model - lag(rate_model))*
+      ((population + lag(population))/2) / 100000,
+      
+      case_change = cases_model - lag(cases_model))
+
+# Rates per 100,000 population
+annual_cases = annual_cases %>%
+  mutate(pop_effect_rate = (pop_effect / population)* 100000,
+         rate_effect_rate = (rate_effect / population)* 100000)
+
+write.csv(annual_cases, "G:/My Drive/PhD/Manuscripts/DHIS2/Datasets/Incidence Decomposition.csv")
+
+
+# Plot
+annual_long = annual_cases %>%
+  dplyr::select(year, pop_effect_rate, rate_effect_rate) %>%
+  pivot_longer(-year, names_to="component", values_to="rate")
+
+EpiA = ggplot(annual_long, aes(x=year, y=rate,
+                               color=component)) +
+  geom_line(linewidth=0.8) +
+  geom_point(aes(shape = component), size=2) +
+  geom_text(aes(label = round(rate, 3)), size = 3,
+            vjust = -0.6, show.legend = FALSE) +
+  labs(x="Period", y="Incidence rate per 100,000 \n population", color="Component") +
+  scale_color_manual(name = "",
+                     values=c("pop_effect_rate"="steelblue",
+                              "rate_effect_rate"="tomato"),
+                     labels = c("Population effect",
+                                "Epidemiological effect")) +
+  scale_shape_manual(name = "",
+                     values=c("pop_effect_rate"=21,
+                              "rate_effect_rate"=16),
+                     labels = c("Population effect",
+                                "Epidemiological effect")) +
+  theme_minimal() + ylim(0,1.2) + 
+  theme(legend.position = c(0.15, 0.9),
+        legend.key.size = unit(0.4, "cm")) +
+  scale_x_continuous(breaks = seq(min(annual_long$year),
+                                max(annual_long$year),
+                                by = 1))
+```
+
+
+
+
+### Stroke deaths
+
+```{r}
+
+# Poisson model
+pois_model = glm(stroke_deaths_clean ~ time +
+                   offset(log(population)),
+                  family=poisson(link="log"), 
+                 data=stroke_data)
+
+dispersiontest(pois_model) # dispersion test
+
+# Negative Binomial model
+nb_model = glm.nb(stroke_deaths_clean ~ time +
+                    offset(log(population)),
+                  data=stroke_data)
+
+data.frame(Model = c("Poisson model",
+                     "Negative Binomial model"),
+           AIC = c(AIC(pois_model), AIC(nb_model)))
+
+# Bayesian Negative Binomial model
+library(brms)
+bayes_nb = brm(stroke_deaths_clean ~ time +
+                 offset(log(population)),
+               family = negbinomial(),
+               data = stroke_data,
+               prior = c(prior(normal(0,10),
+                               class = "Intercept"),
+                         prior(normal(0,1), class = "b")),
+               chains = 4,
+               iter = 1000)
+summary(bayes_nb)
+pp_check(bayes_nb)
+
+# Extract estimates
+summary(bayes_nb)
+post <- posterior_summary(bayes_nb)
+
+irr <- exp(post[, "Estimate"])
+lower <- exp(post[, "Q2.5"])
+upper <- exp(post[, "Q97.5"])
+
+results <- data.frame(IRR = irr, CI_lower = lower, CI_upper = upper)
+results[grep("^b_", rownames(results)), ]
+
+# Residual inspection
+res = residuals(bayes_nb)[, "Estimate"]
+Box.test(res, lag = 12, type = "Ljung-Box")
+
+
+
+### Decomposition: Population Growth vs Epidemiological Change
+
+stroke_deaths = stroke_data %>%
+  mutate(fitted_deaths = predict(bayes_nb, newdata =.,
+                                type = "response"),
+         fitted_rate = (fitted_deaths[, "Estimate"] / population) * 100000)
+
+annual_deaths = stroke_deaths %>% group_by(year) %>%
+  summarise(population = mean(population),
+            deaths = sum(stroke_deaths_clean),
+            deaths_model = sum(fitted_deaths[, "Estimate"]),
+            rate_model = sum(fitted_deaths[, "Estimate"]) / mean(population) * 100000) %>%
+  arrange(year)
+
+annual_deaths = annual_deaths %>%
+  mutate(pop_effect = (population - lag(population))*
+      ((rate_model + lag(rate_model))/2) / 100000,
+      
+      rate_effect = (rate_model - lag(rate_model))*
+      ((population + lag(population))/2) / 100000,
+      
+      deaths_change = deaths_model - lag(deaths_model))
+
+# Rates per 100,000 population
+annual_deaths = annual_deaths %>%
+  mutate(pop_effect_rate = (pop_effect / population)* 100000,
+         rate_effect_rate = (rate_effect / population)* 100000)
+
+write.csv(annual_deaths, "G:/My Drive/PhD/Manuscripts/DHIS2/Datasets/mortality Decomposition.csv")
+
+# Plot
+annual_long = annual_deaths %>%
+  dplyr::select(year, pop_effect_rate, rate_effect_rate) %>%
+  pivot_longer(-year, names_to="component", values_to="rate")
+
+EpiB = ggplot(annual_long, aes(x=year, y=rate,
+                               color=component)) +
+  geom_line(linewidth=0.8) + 
+    geom_point(aes(shape = component), size=2) +
+  geom_text(aes(label = round(rate, 3)), size = 3,
+            vjust = -0.6, show.legend = FALSE) +
+  labs(x="Period", y="Mortality rate per 100,000 \n population", color="Component") +
+  scale_color_manual(name = "",
+                     values=c("pop_effect_rate"="steelblue",
+                              "rate_effect_rate"="tomato"),
+                     labels = c("Population effect",
+                                "Epidemiological effect")) +
+  scale_shape_manual(name = "",
+                     values=c("pop_effect_rate"=21,
+                              "rate_effect_rate"=16),
+                     labels = c("Population effect",
+                                "Epidemiological effect")) +
+  theme_minimal() + ylim(0, 0.15) + 
+  theme(legend.position = c(0.15, 0.9),
+        legend.key.size = unit(0.4, "cm")) +
+  scale_x_continuous(breaks = seq(min(annual_long$year),
+                                max(annual_long$year),
+                                by = 1))
+
+```
+
+### Model-Based Decomposition plots merged
+
+```{r}
+
+library(ggpubr)
+ggarrange(EpiA, EpiB, ncol=1, nrow=2)
+
+```
+
+
+
+
+### Case Fatality Trend
+
+```{r}
+# cfr_model = glm(
+#   cbind(stroke_deaths_clean, stroke_cases_clean - stroke_deaths_clean) ~
+#     time, family = binomial,data = stroke_data)
+# 
+# summary(cfr_model)
+# 
+# beta = coef(cfr_model)["time"]
+# MPC = (exp(beta) - 1) * 100
+# MPC
+
+```
+
+
+
+
+####################################################################
+############################# Forecasting ##########################
+####################################################################
+
+
+
+```{r, include=FALSE}
+library(dplyr)
+library(readr)
+library(janitor)
+library(tidyverse)
+library(ggplot2)
+library(tibble)
+library(tsibble)
+library(forecast)
+library(ggtime)
+library(feasts)
+library(fable)
+library(fabletools)
+library(seasonal)
+library(ggplot2)
+
+```
+
+
+
+```{r}
+stroke_data = stroke_data %>% 
+  dplyr::select(-c(`stroke accidents`,
+                   `stroke cases`,
+                   `stroke deaths`))
+
+stroke_data = stroke_data %>% 
+  mutate(period = as.Date(paste0("01-", period),
+                          format = "%d-%b-%y"),
+         Month = yearmonth(period))
+
+# Convert data to tibble
+stroke_data = stroke_data %>%
+  as_tsibble(index = Month)
+```
+
+
+
+####################
+### Stroke cases
+####################
+
+```{r}
+
+stroke_data %>%
+  ggplot(aes(x = date, y = stroke_cases_clean)) +
+  geom_line(linewidth = 0.8, color = "navyblue") +
+  geom_point(size = 1) +
+  scale_x_date(date_labels = "%b-%Y", date_breaks = "3 month") +
+  labs(x = "Month", y = "Stroke Accidents") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+# Assess stationarity and seasonality
+
+```{r}
+
+stroke_data %>%
+  gg_tsdisplay((stroke_cases_clean), plot_type='partial', lag=36) # These now appear to be stationary
+
+# Unitroot kpss test. Ho: Data are stationary and non seasonal
+stroke_data %>% 
+  features(stroke_cases_clean, unitroot_kpss) # No evidence of H0
+
+# Another way to determine if you need to differentiate based on STL decomposition. Ho: if the Seasonal strength; Fs > 0.64, take the 1st difference
+stroke_data %>% features(stroke_cases_clean, feat_stl)
+
+##### Seasonal plot
+s3 = stroke_data %>%
+  fill_gaps() %>%
+  gg_season(stroke_cases_clean, labels = "none") +
+  labs(y = "Confirmed stroke cases") +
+  theme_classic()
+
+### Seasonal Subseries plot
+s4 = stroke_data %>%
+  gg_subseries(stroke_cases_clean) +
+  labs(y = "Confirmed stroke cases")
+
+
+```
+
+# Forecasting
+
+```{r}
+
+train = stroke_data %>%
+  filter(year(Month) <= 2024)
+
+acc_models = train %>%
+  model(NAIVE = NAIVE(sqrt(stroke_cases_clean)),
+        ETS = ETS(sqrt(stroke_cases_clean) ~ error("A") + trend("A") + season("A")),
+        ARIMA = ARIMA(sqrt(stroke_cases_clean)))
+
+acc_models %>% pivot_longer(everything(), names_to = "Model name",
+                     values_to = "Orders")
+
+data_eval = accuracy(acc_models) %>% arrange(RMSE) %>%
+  dplyr::select(-c(.type, ACF1, ME, MPE))
+
+# Evaluation Heat Map
+df_long = data_eval %>%
+  pivot_longer(cols = - .model, names_to = "Metric", values_to = "Value")
+
+cases_metrics = ggplot(df_long, aes(x = Metric, y = .model, fill = Value)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(Value, 3)), size = 4) +
+  scale_fill_gradient(low = "#f0f9e8", high = "#08589e") +
+  labs(title = "Stroke cases",
+       x = "Metrics", y = "Model", fill = "Value") +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(hjust = 1),
+    panel.grid = element_blank()) + guides(fill = "none")
+cases_metrics
+
+acc_fc = acc_models %>% forecast(h = "4 years") 
+  
+acc_fc %>% autoplot(stroke_data, level=NULL) +
+  theme_classic()
+
+acc_fc %>% accuracy(stroke_data) %>% 
+  dplyr::select(-c(.type, ME, MPE, ACF1)) %>%
+  arrange(RMSE)
+
+# Best fit model: need to generate the 95% PI)
+acc_futures = acc_models %>%
+  generate(h = "4 years", times = 100) %>%
+  as_tibble() %>% group_by(Month, .model) %>%
+  summarise(dist = distributional::dist_sample(list(.sim))) %>%
+  ungroup() %>%
+  as_fable(index = Month, key = .model,
+           distribution = dist,
+           response = "stroke_cases_clean")
+
+# Check the accuracy of the 95% predicted intervals (lower is better)
+acc_futures %>% accuracy(stroke_data, 
+                         measures = interval_accuracy_measures,
+                         level = 95) %>% arrange(winkler)
+
+# Extract Dec-2028 forecast at 80% from ETS
+ets_dec_2028 = acc_fc %>%
+  filter(.model == "ETS",
+         Month == yearmonth("2028 Dec"))  %>%
+  hilo(level=80) %>%
+  unpack_hilo(`80%`) %>%
+  rename(mean = .mean, LCI = `80%_lower`, UCI = `80%_upper`) %>%
+  mutate(mean = round(mean),
+         LCI = round(LCI),
+         UCI = round(UCI)) 
+
+cases_forecast = acc_futures %>% filter(.model == "ETS") %>%
+  autoplot(stroke_data) + theme_bw() +
+  labs(x = "Period",
+       y = "Stroke cases") +
+    theme(legend.position = c(0.02, 0.96),
+    legend.justification = c(0, 1),
+    legend.background = element_rect(fill = "white", 
+                                     colour = "black")) +
+  geom_vline(xintercept = yearmonth("2028 Dec"),
+             linetype = "dashed", colour = "red3") +
+  geom_hline(yintercept = ets_dec_2028$mean,
+             linetype = "dashed", colour = "red3") +
+  geom_point(data = ets_dec_2028,
+             aes(x = Month, y = mean),
+             size = 2, colour = "red3") +
+  geom_text(data = ets_dec_2028,
+            aes(x = Month, y = mean,
+                label = paste0("(2028 Dec, ", mean, ")",
+                "\n", "80% CI (",LCI, ", ", UCI,")")),
+            vjust = -0.3, hjust = 1.05, size = 3, 
+            fontface = "bold", colour = "red3")
+cases_forecast
+
+```
+
+
+
+
+
+
+
+#################
+### Stroke deaths
+#################
+
+```{r}
+
+stroke_data %>%
+  ggplot(aes(x = date, y = stroke_deaths_clean)) +
+  geom_line(linewidth = 0.8, color = "navyblue") +
+  geom_point(size = 1) +
+  scale_x_date(date_labels = "%b-%Y", date_breaks = "3 month") +
+  labs(x = "Month", y = "Stroke Accidents") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+# Assess stationarity and seasonality
+
+```{r}
+
+stroke_data %>%
+  gg_tsdisplay((stroke_deaths_clean), plot_type='partial', lag=36) # These now appear to be stationary
+
+# Unitroot kpss test. Ho: Data are stationary and non seasonal
+stroke_data %>% 
+  features(stroke_deaths_clean, unitroot_kpss) # No evidence of H0
+
+# Another way to determine if you need to differentiate based on STL decomposition. Ho: if the Seasonal strength; Fs > 0.64, take the 1st difference
+stroke_data %>% features(stroke_deaths_clean, feat_stl)
+
+##### Seasonal plot
+s5 = stroke_data %>%
+  fill_gaps() %>%
+  gg_season(stroke_deaths_clean, labels = "none") +
+  labs(y = "Stroke deaths") +
+  theme_classic()
+
+### Seasonal Subseries plot
+s6 = stroke_data %>%
+  gg_subseries(stroke_deaths_clean) +
+  labs(y = "Stroke deaths")
+
+
+```
+
+# Forecasting
+
+```{r}
+
+train = stroke_data %>%
+  filter(year(Month) <= 2024)
+
+acc_models = train %>%
+  model(NAIVE = NAIVE(sqrt(stroke_deaths_clean)),
+        ETS = ETS(sqrt(stroke_deaths_clean) ~ error("A") + trend("A") + season("A")),
+        ARIMA = ARIMA(sqrt(stroke_deaths_clean)))
+
+acc_models %>% pivot_longer(everything(), names_to = "Model name",
+                     values_to = "Orders")
+
+data_eval = accuracy(acc_models) %>% arrange(RMSE) %>%
+  dplyr::select(-c(.type, ACF1, ME, MPE))
+
+# Evaluation Heat Map
+df_long = data_eval %>%
+  pivot_longer(cols = - .model, names_to = "Metric", values_to = "Value")
+
+deaths_metrics = ggplot(df_long, aes(x = Metric, y = .model, fill = Value)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(Value, 3)), size = 4) +
+  scale_fill_gradient(low = "#f0f9e8", high = "#08589e") +
+  labs(title = "Stroke deaths",
+       x = "Metrics", y = "Model", fill = "Value") +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(hjust = 1),
+    panel.grid = element_blank()) + guides(fill = "none")
+deaths_metrics
+
+acc_fc = acc_models %>% forecast(h = "4 years") 
+  
+acc_fc %>% autoplot(stroke_data, level=NULL) +
+  theme_classic()
+
+acc_fc %>% accuracy(stroke_data) %>% 
+  dplyr::select(-c(.type, ME, MPE, ACF1)) %>%
+  arrange(RMSE)
+
+# Best fit model: need to generate the 95% PI)
+acc_futures = acc_models %>%
+  generate(h = "4 years", times = 100) %>%
+  as_tibble() %>% group_by(Month, .model) %>%
+  summarise(dist = distributional::dist_sample(list(.sim))) %>%
+  ungroup() %>%
+  as_fable(index = Month, key = .model,
+           distribution = dist,
+           response = "stroke_deaths_clean")
+
+# Check the accuracy of the 95% predicted intervals (lower is better)
+acc_futures %>% accuracy(stroke_data, 
+                         measures = interval_accuracy_measures,
+                         level = 95) %>% arrange(winkler)
+
+# Extract Dec-2027 forecast at 80% from ETS
+ets_dec_2028 = acc_fc %>%
+  filter(.model == "ETS",
+         Month == yearmonth("2028 Dec"))  %>%
+  hilo(level=80) %>%
+  unpack_hilo(`80%`) %>%
+  rename(mean = .mean, LCI = `80%_lower`, UCI = `80%_upper`) %>%
+  mutate(mean = round(mean),
+         LCI = round(LCI),
+         UCI = round(UCI)) 
+
+deaths_forecasts = acc_futures %>% filter(.model == "ETS") %>%
+  autoplot(stroke_data) + theme_bw() +
+  labs(x = "Period",
+       y = "Stroke deaths") +
+    theme(legend.position = c(0.02, 0.96),
+    legend.justification = c(0, 1),
+    legend.background = element_rect(fill = "white", 
+                                     colour = "black")) +
+  geom_vline(xintercept = yearmonth("2028 Dec"),
+             linetype = "dashed", colour = "red3") +
+  geom_hline(yintercept = ets_dec_2028$mean,
+             linetype = "dashed", colour = "red3") +
+  geom_point(data = ets_dec_2028,
+             aes(x = Month, y = mean),
+             size = 2, colour = "red3") +
+  geom_text(data = ets_dec_2028,
+            aes(x = Month, y = mean,
+                label = paste0("(2028 Dec, ", mean, ")",
+                "\n", "80% CI (",LCI, ", ", UCI,")")),
+            vjust = -0.3, hjust = 1.05, size = 3, 
+            fontface = "bold", colour = "red3")
+deaths_forecasts
+
+```
+
+
+```{r}
+
+stroke_data = stroke_data %>% 
+  mutate(pop_million = population/1e6)
+
+stroke_long = stroke_data %>%
+  dplyr::select(Month, stroke_accidents_clean,
+         stroke_cases_clean, stroke_deaths_clean) %>%
+  pivot_longer(cols = -Month, names_to = "type", values_to = "count")
+
+pop_max = max(stroke_data$pop_million)
+count_max = max(stroke_long$count)
+scale_factor = (pop_max / count_max)*4/5
+
+ggplot() +
+  geom_line(data = stroke_data,
+            aes(x = Month, y = pop_million, colour = "pop_million"), size = 1.2) +
+  geom_line(data = stroke_long, aes(x = Month,
+                                    y = count * scale_factor,
+                                    color = type), size = 1.2) +
+  scale_y_continuous(name = "Population in millions",
+    sec.axis = sec_axis(~ . / scale_factor,
+                        name = "Stroke Events")) +
+  scale_color_manual(values = c("pop_million" = "black", 
+                            "stroke_accidents_clean" = "skyblue",
+                            "stroke_cases_clean" = "coral",
+                            "stroke_deaths_clean" = "red2"),
+                     labels = c("Population", "Stroke admissions",
+                                "Stroke Cases", "Stroke Deaths"),
+                     name = "") + labs(x = "Period") + theme_minimal() + theme(legend.position = "bottom")
+```
+
+
+### Merged plots
+```{r}
+
+library(ggpubr)
+
+ggarrange(cases_metrics, deaths_metrics,
+          ncol=1, nrow=2)
+
+ggarrange(cases_forecast, deaths_forecasts,
+          ncol=1, nrow=2)
+
+ggarrange(s3, s4, s5, s6, ncol=2, nrow=2)
+
+top_row = ggarrange(s3, s5, ncol = 2)
+middle_row = ggarrange(s4, ncol = 1)
+bottom_row = ggarrange(s6, ncol = 1)
+ggarrange(top_row, middle_row, bottom_row, ncol = 1,
+                       heights = c(1, 1, 1))
+
+
+```
+
