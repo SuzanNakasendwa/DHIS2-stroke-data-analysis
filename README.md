@@ -28,3 +28,12 @@ The used for this analysis were monthly counts of population, stroke related adm
 
 ### Code availability
 The analysis scripts are publicly available in this repository.
+
+### Publications
+
+### Rising Stroke Burden in Uganda: Trends and Forecasts from DHIS2 Data
+
+- **Journal:** PLOS ONE
+- **Publication year:** 2026
+- **Article:** [Read the published manuscript](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0360963)
+- **DOI:** [10.1371/journal.pone.0360963](https://doi.org/10.1371/journal.pone.0360963)
